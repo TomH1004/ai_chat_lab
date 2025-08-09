@@ -16,12 +16,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final TextEditingController _apiKeyController = TextEditingController();
   final TextEditingController _characterIdController = TextEditingController();
   final TextEditingController _newCharacterController = TextEditingController();
+  final TextEditingController _characterNameController = TextEditingController();
+  final TextEditingController _initialPromptController = TextEditingController();
+  final TextEditingController _newCharacterNameController = TextEditingController();
+  final TextEditingController _newCharacterPromptController = TextEditingController();
   
   final ConvaiService _convaiService = ConvaiService();
   final StorageService _storageService = StorageService();
   
   bool _savingEnabled = false;
+  bool _supervisedMode = false;
+  bool _timedExperiment = false;
+  int _experimentDuration = 5;
   List<String> _savedCharacters = [];
+  Map<String, String> _characterNames = {};
   bool _showApiKey = false;
 
   @override
@@ -30,18 +38,37 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _loadSettings();
   }
 
-  void _loadSettings() async {
+  Future<void> _loadSettings() async {
     await _convaiService.loadSettings();
     _apiKeyController.text = _convaiService.apiKey;
     _characterIdController.text = _convaiService.characterId;
     
     final saving = await _storageService.isSavingEnabled();
     final characters = await _convaiService.getSavedCharacters();
+    final supervised = await _convaiService.isSupervisedModeEnabled();
+    final timedExperiment = await _convaiService.isTimedExperimentEnabled();
+    final duration = await _convaiService.getExperimentDurationMinutes();
+    final names = await _convaiService.getAllCharacterNames();
+    final selectedPrompt = await _convaiService.getCharacterInitialPrompt(_convaiService.characterId);
     
     setState(() {
       _savingEnabled = saving;
       _savedCharacters = characters;
+      _supervisedMode = supervised;
+      _timedExperiment = timedExperiment;
+      _experimentDuration = duration;
+      _characterNames = names;
+      _initialPromptController.text = selectedPrompt;
     });
+
+    _characterNameController.text = names[_characterIdController.text.trim()] ?? '';
+  }
+
+  Future<void> _applySelectedCharacterChange() async {
+    final id = _characterIdController.text.trim();
+    _characterNameController.text = await _convaiService.getCharacterName(id);
+    _initialPromptController.text = await _convaiService.getCharacterInitialPrompt(id);
+    setState(() {});
   }
 
   void _saveSettings() async {
@@ -51,13 +78,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
         _characterIdController.text.trim(),
       );
       await _storageService.setSavingEnabled(_savingEnabled);
+      await _convaiService.setSupervisedModeEnabled(_supervisedMode);
+      await _convaiService.setTimedExperimentEnabled(_timedExperiment);
+      await _convaiService.setExperimentDurationMinutes(_experimentDuration);
       
-      // If there's a character ID, save it to the character management list
-      final characterId = _characterIdController.text.trim();
-      if (characterId.isNotEmpty) {
-        await _convaiService.saveCharacter(characterId);
-        // Reload settings to refresh the character list
-        _loadSettings();
+      // Save name/prompt for current character if provided
+      final currentId = _characterIdController.text.trim();
+      if (currentId.isNotEmpty) {
+        await _convaiService.saveCharacter(currentId);
+        await _convaiService.setCharacterName(currentId, _characterNameController.text.trim());
+        await _convaiService.setCharacterInitialPrompt(currentId, _initialPromptController.text.trim());
+        // Reload settings to refresh lists and maps
+        await _loadSettings();
       }
       
       if (mounted) {
@@ -68,7 +100,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
         );
         
-        // Navigate to chat if properly configured
         if (_convaiService.isConfigured) {
           Navigator.of(context).pushReplacement(
             MaterialPageRoute(builder: (context) => const ChatScreen()),
@@ -89,9 +120,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   void _addCharacter() async {
     final characterId = _newCharacterController.text.trim();
+    final characterName = _newCharacterNameController.text.trim();
+    final characterPrompt = _newCharacterPromptController.text.trim();
     if (characterId.isNotEmpty) {
       await _convaiService.saveCharacter(characterId);
+      if (characterName.isNotEmpty) {
+        await _convaiService.setCharacterName(characterId, characterName);
+      }
+      if (characterPrompt.isNotEmpty) {
+        await _convaiService.setCharacterInitialPrompt(characterId, characterPrompt);
+      }
       _newCharacterController.clear();
+      _newCharacterNameController.clear();
+      _newCharacterPromptController.clear();
       _loadSettings();
     }
   }
@@ -101,10 +142,106 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _loadSettings();
   }
 
-  void _selectCharacter(String characterId) {
+  void _selectCharacter(String characterId) async {
     setState(() {
       _characterIdController.text = characterId;
     });
+    await _applySelectedCharacterChange();
+  }
+
+  Future<void> _editCharacter(String characterId) async {
+    final existingName = await _convaiService.getCharacterName(characterId);
+    final existingPrompt = await _convaiService.getCharacterInitialPrompt(characterId);
+    final idController = TextEditingController(text: characterId);
+    final nameController = TextEditingController(text: existingName);
+    final promptController = TextEditingController(text: existingPrompt);
+
+    if (!mounted) return;
+    final bool? saved = await showDialog<bool>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: Text('Edit Avatar', style: const TextStyle(fontWeight: FontWeight.w600)),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: idController,
+                  decoration: const InputDecoration(
+                    labelText: 'Character ID',
+                    hintText: 'Unique character ID',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: const Text('Display Name and Prompt', style: TextStyle(fontSize: 12, color: Color(0xFF64748B))),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: nameController,
+                  decoration: const InputDecoration(
+                    labelText: 'Name',
+                    hintText: 'e.g., Detective Bot',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: promptController,
+                  maxLines: null,
+                  decoration: const InputDecoration(
+                    labelText: 'Initial Prompt',
+                    hintText: 'Optional first-turn prompt (used in Supervised Mode)',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('Save'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (saved == true) {
+      final newId = idController.text.trim();
+      try {
+        if (newId != characterId) {
+          await _convaiService.renameCharacterId(characterId, newId);
+          // Keep selection in form in sync if this was the current selection
+          if (_characterIdController.text.trim() == characterId) {
+            _characterIdController.text = newId;
+          }
+          characterId = newId;
+        }
+        await _convaiService.setCharacterName(characterId, nameController.text.trim());
+        await _convaiService.setCharacterInitialPrompt(characterId, promptController.text.trim());
+        await _loadSettings();
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Avatar updated'), backgroundColor: Colors.green),
+          );
+        }
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Failed to update: $e'), backgroundColor: Colors.red),
+          );
+        }
+      }
+    }
   }
 
   void _showChatDirectory() async {
@@ -182,19 +319,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
     if (shouldReset == true) {
       try {
-        // Clear SharedPreferences
         final prefs = await SharedPreferences.getInstance();
         await prefs.clear();
 
-        // Clear text controllers
         _apiKeyController.clear();
         _characterIdController.clear();
         _newCharacterController.clear();
+        _characterNameController.clear();
+        _initialPromptController.clear();
+        _newCharacterNameController.clear();
+        _newCharacterPromptController.clear();
 
-        // Reset state
         setState(() {
           _savingEnabled = false;
+          _supervisedMode = false;
+          _timedExperiment = false;
+          _experimentDuration = 5;
           _savedCharacters = [];
+          _characterNames = {};
         });
 
         if (mounted) {
@@ -246,7 +388,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // API Configuration
             _buildSection(
               'API Configuration',
               [
@@ -268,9 +409,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 const SizedBox(height: 16),
                 TextField(
                   controller: _characterIdController,
+                  onChanged: (_) => _applySelectedCharacterChange(),
                   decoration: InputDecoration(
                     labelText: 'Current Character ID',
                     hintText: 'Enter character ID to chat with',
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: _characterNameController,
+                  decoration: InputDecoration(
+                    labelText: 'Character Name (for your reference)',
+                    hintText: 'e.g., Detective Bot',
                     border: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(8),
                     ),
@@ -281,18 +434,32 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
             const SizedBox(height: 24),
 
-            // Character Management
             _buildSection(
               'Character Management',
               [
                 Row(
                   children: [
                     Expanded(
+                      flex: 2,
                       child: TextField(
                         controller: _newCharacterController,
                         decoration: InputDecoration(
-                          labelText: 'Add New Character',
+                          labelText: 'New Character ID',
                           hintText: 'Enter character ID',
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      flex: 2,
+                      child: TextField(
+                        controller: _newCharacterNameController,
+                        decoration: InputDecoration(
+                          labelText: 'Name (optional)',
+                          hintText: 'e.g., Detective Bot',
                           border: OutlineInputBorder(
                             borderRadius: BorderRadius.circular(8),
                           ),
@@ -313,6 +480,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     ),
                   ],
                 ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: _newCharacterPromptController,
+                  maxLines: null,
+                  decoration: InputDecoration(
+                    labelText: 'Initial Prompt (optional)',
+                    hintText: 'First message sent when using Supervised Mode',
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                  ),
+                ),
                 const SizedBox(height: 16),
                 if (_savedCharacters.isNotEmpty) ...[
                   const Text(
@@ -324,51 +503,86 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ),
                   const SizedBox(height: 8),
                   ...(_savedCharacters.map((character) => Container(
-                    margin: const EdgeInsets.only(bottom: 8),
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(color: const Color(0xFFE0E7EF)),
-                    ),
-                    child: ListTile(
-                      title: Text(
-                        character,
-                        style: const TextStyle(fontFamily: 'monospace'),
-                      ),
-                      trailing: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          IconButton(
-                            icon: const Icon(Icons.copy, size: 20),
-                            onPressed: () {
-                              Clipboard.setData(ClipboardData(text: character));
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(content: Text('Character ID copied')),
-                              );
-                            },
-                            tooltip: 'Copy ID',
+                        margin: const EdgeInsets.only(bottom: 8),
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: const Color(0xFFE0E7EF)),
+                        ),
+                        child: ListTile(
+                          title: Text(
+                            _characterNames[character]?.isNotEmpty == true
+                                ? '${_characterNames[character]}'
+                                : character,
+                            style: _characterNames[character]?.isNotEmpty == true
+                                ? const TextStyle()
+                                : const TextStyle(fontFamily: 'monospace'),
                           ),
-                          IconButton(
-                            icon: const Icon(Icons.play_arrow, size: 20, color: Color(0xFF4F8CFF)),
-                            onPressed: () => _selectCharacter(character),
-                            tooltip: 'Use this character',
+                          subtitle: _characterNames[character]?.isNotEmpty == true
+                              ? Text('ID: $character', style: const TextStyle(fontFamily: 'monospace'))
+                              : null,
+                          trailing: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              IconButton(
+                                icon: const Icon(Icons.drive_file_rename_outline, size: 20),
+                                onPressed: () => _editCharacter(character),
+                                tooltip: 'Edit name/prompt',
+                              ),
+                              IconButton(
+                                icon: const Icon(Icons.copy, size: 20),
+                                onPressed: () {
+                                  Clipboard.setData(ClipboardData(text: character));
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    const SnackBar(content: Text('Character ID copied')),
+                                  );
+                                },
+                                tooltip: 'Copy ID',
+                              ),
+                              IconButton(
+                                icon: const Icon(Icons.play_arrow, size: 20, color: Color(0xFF4F8CFF)),
+                                onPressed: () => _selectCharacter(character),
+                                tooltip: 'Use this character',
+                              ),
+                              IconButton(
+                                icon: const Icon(Icons.delete, size: 20, color: Colors.red),
+                                onPressed: () => _removeCharacter(character),
+                                tooltip: 'Remove',
+                              ),
+                            ],
                           ),
-                          IconButton(
-                            icon: const Icon(Icons.delete, size: 20, color: Colors.red),
-                            onPressed: () => _removeCharacter(character),
-                            tooltip: 'Remove',
-                          ),
-                        ],
-                      ),
-                    ),
-                  ))),
+                        ),
+                      )))
                 ],
               ],
             ),
 
             const SizedBox(height: 24),
 
-            // Chat Settings
+            _buildSection(
+              'Initial Prompt (per character)',
+              [
+                TextField(
+                  controller: _initialPromptController,
+                  maxLines: null,
+                  decoration: InputDecoration(
+                    labelText: 'Initial Prompt',
+                    hintText: 'Optional system-style message to send as the first turn when supervised mode is enabled',
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                const Text(
+                  'When Supervised Mode is ON, the first turn will use this prompt and the user must press Start Experiment.',
+                  style: TextStyle(fontSize: 12, color: Color(0xFF64748B)),
+                ),
+              ],
+            ),
+
+            const SizedBox(height: 24),
+
             _buildSection(
               'Chat Settings',
               [
@@ -383,6 +597,67 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     side: const BorderSide(color: Color(0xFFE0E7EF)),
                   ),
                 ),
+                SwitchListTile(
+                  title: const Text('Supervised Mode'),
+                  subtitle: const Text('Disable typing for first message; require Start Experiment'),
+                  value: _supervisedMode,
+                  onChanged: (value) => setState(() => _supervisedMode = value),
+                  tileColor: Colors.white,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8),
+                    side: const BorderSide(color: Color(0xFFE0E7EF)),
+                  ),
+                ),
+                SwitchListTile(
+                  title: const Text('Timed Experiment'),
+                  subtitle: const Text('Hide messages after time limit expires'),
+                  value: _timedExperiment,
+                  onChanged: (value) => setState(() => _timedExperiment = value),
+                  tileColor: Colors.white,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8),
+                    side: const BorderSide(color: Color(0xFFE0E7EF)),
+                  ),
+                ),
+                if (_timedExperiment) ...[
+                  const SizedBox(height: 16),
+                  Row(
+                    children: [
+                      const Text('Duration:', style: TextStyle(fontWeight: FontWeight.w500)),
+                      const SizedBox(width: 16),
+                      Container(
+                        width: 80,
+                        child: DropdownButtonFormField<int>(
+                          value: _experimentDuration,
+                          decoration: InputDecoration(
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                          ),
+                          items: [1, 2, 3, 5, 10, 15, 20, 30].map((minutes) {
+                            return DropdownMenuItem<int>(
+                              value: minutes,
+                              child: Text('$minutes'),
+                            );
+                          }).toList(),
+                          onChanged: (value) {
+                            if (value != null) {
+                              setState(() => _experimentDuration = value);
+                            }
+                          },
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      const Text('minutes'),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  const Text(
+                    'Chat will be hidden after the time limit expires from the first message.',
+                    style: TextStyle(fontSize: 12, color: Color(0xFF64748B)),
+                  ),
+                ],
                 if (_savingEnabled) ...[
                   const SizedBox(height: 16),
                   ElevatedButton.icon(
@@ -404,7 +679,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
             const SizedBox(height: 24),
 
-            // Reset Section
             _buildSection(
               'Reset & Data',
               [
@@ -433,7 +707,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
             const SizedBox(height: 24),
 
-            // Information Section
             _buildSection(
               'Information',
               [
@@ -516,6 +789,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _apiKeyController.dispose();
     _characterIdController.dispose();
     _newCharacterController.dispose();
+    _characterNameController.dispose();
+    _initialPromptController.dispose();
+    _newCharacterNameController.dispose();
+    _newCharacterPromptController.dispose();
     super.dispose();
   }
 }
