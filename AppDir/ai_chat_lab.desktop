@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=AI Chat Lab
+Comment=Conversational AI Chat
+Exec=convai_chat
+Icon=convai_chat
+Terminal=false
+Categories=Utility;Education;

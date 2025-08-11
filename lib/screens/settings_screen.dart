@@ -24,6 +24,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final ConvaiService _convaiService = ConvaiService();
   final StorageService _storageService = StorageService();
   
+  // DeepL
+  final TextEditingController _deeplApiKeyController = TextEditingController();
+  bool _deeplEnabled = false;
+  bool _deeplUseFreeApi = true;
+  String _deeplSourceLang = 'AUTO';
+  String _deeplTargetLang = 'EN';
+  
   bool _savingEnabled = false;
   bool _supervisedMode = false;
   bool _timedExperiment = false;
@@ -50,6 +57,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final duration = await _convaiService.getExperimentDurationMinutes();
     final names = await _convaiService.getAllCharacterNames();
     final selectedPrompt = await _convaiService.getCharacterInitialPrompt(_convaiService.characterId);
+    final prefs = await SharedPreferences.getInstance();
+    final deeplEnabled = prefs.getBool('deepl_enabled') ?? false;
+    final deeplApiKey = prefs.getString('deepl_api_key') ?? '';
+    final deeplUseFree = prefs.getBool('deepl_use_free') ?? true;
+    final deeplSource = prefs.getString('deepl_source_lang') ?? 'AUTO';
+    final deeplTarget = prefs.getString('deepl_target_lang') ?? 'EN';
     
     setState(() {
       _savingEnabled = saving;
@@ -59,6 +72,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _experimentDuration = duration;
       _characterNames = names;
       _initialPromptController.text = selectedPrompt;
+      _deeplEnabled = deeplEnabled;
+      _deeplApiKeyController.text = deeplApiKey;
+      _deeplUseFreeApi = deeplUseFree;
+      _deeplSourceLang = deeplSource;
+      _deeplTargetLang = deeplTarget;
     });
 
     _characterNameController.text = names[_characterIdController.text.trim()] ?? '';
@@ -81,6 +99,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
       await _convaiService.setSupervisedModeEnabled(_supervisedMode);
       await _convaiService.setTimedExperimentEnabled(_timedExperiment);
       await _convaiService.setExperimentDurationMinutes(_experimentDuration);
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool('deepl_enabled', _deeplEnabled);
+      await prefs.setString('deepl_api_key', _deeplApiKeyController.text.trim());
+      await prefs.setBool('deepl_use_free', _deeplUseFreeApi);
+      await prefs.setString('deepl_source_lang', _deeplSourceLang.toUpperCase());
+      await prefs.setString('deepl_target_lang', _deeplTargetLang.toUpperCase());
       
       // Save name/prompt for current character if provided
       final currentId = _characterIdController.text.trim();
@@ -597,6 +621,81 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     side: const BorderSide(color: Color(0xFFE0E7EF)),
                   ),
                 ),
+                const SizedBox(height: 8),
+                SwitchListTile(
+                  title: const Text('DeepL: Save translated copy'),
+                  subtitle: const Text('Create an additional file translated via DeepL'),
+                  value: _deeplEnabled,
+                  onChanged: (value) => setState(() => _deeplEnabled = value),
+                  tileColor: Colors.white,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8),
+                    side: const BorderSide(color: Color(0xFFE0E7EF)),
+                  ),
+                ),
+                if (_deeplEnabled) ...[
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: _deeplApiKeyController,
+                    obscureText: true,
+                    decoration: InputDecoration(
+                      labelText: 'DeepL API Key',
+                      hintText: 'Enter your DeepL API key',
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: DropdownButtonFormField<String>(
+                          value: _deeplSourceLang,
+                          items: _deeplLanguageCodes(includeAuto: true)
+                              .map((code) => DropdownMenuItem(
+                                    value: code,
+                                    child: Text(code),
+                                  ))
+                              .toList(),
+                          onChanged: (v) => setState(() => _deeplSourceLang = (v ?? 'AUTO').toUpperCase()),
+                          decoration: InputDecoration(
+                            labelText: 'Source Language',
+                            border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: DropdownButtonFormField<String>(
+                          value: _deeplTargetLang,
+                          items: _deeplLanguageCodes()
+                              .where((c) => c != 'AUTO')
+                              .map((code) => DropdownMenuItem(
+                                    value: code,
+                                    child: Text(code),
+                                  ))
+                              .toList(),
+                          onChanged: (v) => setState(() => _deeplTargetLang = (v ?? 'EN').toUpperCase()),
+                          decoration: InputDecoration(
+                            labelText: 'Target Language',
+                            border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      Checkbox(
+                        value: _deeplUseFreeApi,
+                        onChanged: (v) => setState(() => _deeplUseFreeApi = v ?? true),
+                      ),
+                      const Text('Use api-free.deepl.com (Free tier)'),
+                    ],
+                  ),
+                ],
                 SwitchListTile(
                   title: const Text('Supervised Mode'),
                   subtitle: const Text('Disable typing for first message; require Start Experiment'),
@@ -793,6 +892,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _initialPromptController.dispose();
     _newCharacterNameController.dispose();
     _newCharacterPromptController.dispose();
+    _deeplApiKeyController.dispose();
     super.dispose();
+  }
+
+  List<String> _deeplLanguageCodes({bool includeAuto = false}) {
+    // List of DeepL supported target codes (as of 2024-2025). Keep concise.
+    final codes = <String>[
+      'BG','CS','DA','DE','EL','EN','ES','ET','FI','FR','HU','ID','IT','JA','KO','LT','LV','NB','NL','PL','PT','RO','RU','SK','SL','SV','TR','UK','ZH'
+    ];
+    if (includeAuto) return ['AUTO', ...codes];
+    return codes;
   }
 }
